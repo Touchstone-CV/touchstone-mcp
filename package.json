@@ -1,5 +1,5 @@
 {
-  "name": "@touchstone/mcp",
+  "name": "@touchstone-cv/mcp",
   "version": "0.1.0",
   "description": "Local MCP server for Touchstone — record agent actions into a tamper-evident, externally-anchored log. Signs locally; your Ed25519 key never leaves your machine.",
   "type": "module",
