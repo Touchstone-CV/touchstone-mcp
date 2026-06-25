@@ -20,7 +20,7 @@
 // Canonical source: https://github.com/Touchstone-CV/touchstone-mcp  (Apache-2.0)
 // Service: https://touchstone.cv/developers
 
-import { createHash, createPrivateKey, sign as edSign } from 'node:crypto';
+import { createHash, createPrivateKey, sign as edSign, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
@@ -48,6 +48,32 @@ function canon(v) {
   return JSON.stringify(v);
 }
 const sha256hex = (s) => createHash('sha256').update(s, 'utf8').digest('hex');
+
+// ── Selective disclosure: payload_hash = salted-field Merkle root (matches
+//    src/Service/SelectiveDisclosure.php + MerkleService + verifier.js byte-for-byte).
+//    Lets you reveal a subset of fields later without exposing the rest. ──
+const _shaBuf = (buf) => createHash('sha256').update(buf).digest('hex');
+const _hex = (h) => Buffer.from(h, 'hex');
+const mLeaf = (h) => _shaBuf(Buffer.concat([Buffer.from([0]), _hex(h)]));
+const mNode = (l, r) => _shaBuf(Buffer.concat([Buffer.from([1]), _hex(l), _hex(r)]));
+const fieldLeaf = (k, v, salt) => sha256hex('tsd:field:v1\n' + canon([k, v, salt]));
+function merkleRoot(leafHexes) {
+  let level = leafHexes.map(mLeaf);
+  while (level.length > 1) {
+    const next = [];
+    for (let i = 0; i < level.length; i += 2) next.push(i + 1 < level.length ? mNode(level[i], level[i + 1]) : level[i]);
+    level = next;
+  }
+  return level[0];
+}
+// Commit a payload object: fresh per-field salts + the Merkle root to sign as payload_hash.
+function sdCommit(payload) {
+  const keys = Object.keys(payload).sort();
+  const salts = {};
+  for (const k of keys) salts[k] = randomBytes(16).toString('hex');
+  const root = merkleRoot(keys.map(k => fieldLeaf(k, payload[k], salts[k])));
+  return { root, salts };
+}
 
 // ── Ed25519 detached signature (base64), key held locally ──
 function loadKey() {
@@ -93,7 +119,21 @@ async function recordEntry(a) {
   if (eventType === '' || a.payload === undefined) throw new Error('event_type and payload are required');
   const cp = a.counterparty_sub ?? null;
   const clientTs = a.client_ts ?? null;
-  const payloadHash = sha256hex(canon(a.payload));
+
+  // Selective-disclosure mode: commit a salted-field Merkle root locally so a later
+  // disclosure can reveal a subset of fields and withhold the rest, provably.
+  let payloadHash, sdSalts = null;
+  if (a.selective_disclosure) {
+    if (!a.payload || typeof a.payload !== 'object' || Array.isArray(a.payload)) {
+      throw new Error('selective_disclosure requires payload to be a JSON object');
+    }
+    const c = sdCommit(a.payload);
+    payloadHash = c.root;
+    sdSalts = c.salts;
+  } else {
+    payloadHash = sha256hex(canon(a.payload));
+  }
+
   const signedContent = canon({
     v: 1, recorder_id: CFG.recorder, event_type: eventType, actor_sub: CFG.subject,
     counterparty_sub: cp, payload_hash: payloadHash, client_ts: clientTs,
@@ -102,7 +142,10 @@ async function recordEntry(a) {
   const body = { event_type: eventType, payload_hash: payloadHash, actor_sig: actorSig };
   if (cp) body.counterparty_sub = cp;
   if (clientTs) body.client_ts = clientTs;
-  if (a.store_payload !== false) body.body_enc = JSON.stringify(a.payload);
+  // SD entries must store the payload (server builds field proofs from it + salts;
+  // withheld values are only ever omitted at disclosure time, never the whole payload).
+  if (sdSalts) { body.sd_salts = sdSalts; body.body_enc = JSON.stringify(a.payload); }
+  else if (a.store_payload !== false) body.body_enc = JSON.stringify(a.payload);
   const res = await rest(`/api/v1/recorders/${CFG.recorder}/entries`, body);
   if (!res.ok) throw new Error('append failed (' + res.status + '): ' + (res.data.error || ''));
   return res.data; // { seq, prev_hash, entry_hash, server_ts }
@@ -115,12 +158,15 @@ const TOOLS = [
       payload: { type: 'object', description: 'arbitrary JSON describing what happened' },
       counterparty_sub: { type: 'string', description: 'optional: the other party\'s Colony sub' },
       client_ts: { type: 'string', description: 'optional ISO-8601 UTC' },
-      store_payload: { type: 'boolean', description: 'default true; false keeps only the hash' } } } },
+      store_payload: { type: 'boolean', description: 'default true; false keeps only the hash' },
+      selective_disclosure: { type: 'boolean', description: 'commit each field separately (salted Merkle root) so a later disclosure can reveal a subset of fields and withhold the rest' } } } },
   { name: 'touchstone_recorder_info', description: 'Your recorder: id, subject, trust tier, head sequence.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'touchstone_disclose', description: 'Create a shareable, independently-verifiable disclosure of selected entries.',
     inputSchema: { type: 'object', required: ['seqs'], additionalProperties: false,
-      properties: { seqs: { type: 'array', items: { type: 'integer' } } } } },
+      properties: {
+        seqs: { type: 'array', items: { type: 'integer' } },
+        reveal: { type: 'object', description: 'optional selective-disclosure map {seq: [field keys to reveal]}; unlisted fields stay withheld' } } } },
   { name: 'touchstone_verify', description: 'Independently verify a disclosure (token or bundle).',
     inputSchema: { type: 'object', additionalProperties: false,
       properties: { token: { type: 'string' }, bundle: { type: 'object' } } } },

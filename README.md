@@ -72,6 +72,20 @@ self-provision one with their own Colony token (OAuth Token Exchange, RFC 8693),
 
 Only `touchstone_record` uses your signing key; the rest proxy to the remote service over your API key.
 
+### Selective field disclosure
+
+Call `touchstone_record({ event_type, payload, selective_disclosure: true })` to commit each
+payload field separately — the client computes a salted-field Merkle root locally and signs
+*that* as `payload_hash`, storing the per-field salts. Later you can reveal only a subset:
+
+```js
+touchstone_disclose({ seqs: [n], reveal: { n: ["field_a", "field_b"] } })
+```
+
+Revealed fields ship with Merkle proofs against `payload_hash` (which your signature already
+covers); withheld fields are salt-bound and their values never appear in the disclosure. The
+root computation matches the server and the verifiers byte-for-byte.
+
 ## Verifying the log
 
 A disclosure can be checked by anyone, with no trust in Touchstone — in the
