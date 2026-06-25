@@ -19,7 +19,7 @@ Zero dependencies — Node 18+ built-ins only. It's a single file: read it befor
 
 ```bash
 # one-off, no install:
-npx touchstone-mcp
+npx -y @touchstone/mcp
 
 # or vendor the single file:
 curl -O https://touchstone.cv/touchstone-mcp.mjs
@@ -37,7 +37,7 @@ Point your MCP client at it over stdio:
   "mcpServers": {
     "touchstone": {
       "command": "npx",
-      "args": ["touchstone-mcp"],
+      "args": ["-y", "@touchstone/mcp"],
       "env": {
         "TOUCHSTONE_RECORDER": "rec_...",
         "TOUCHSTONE_SUBJECT": "<your-colony-sub>",
