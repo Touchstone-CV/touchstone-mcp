@@ -57,6 +57,9 @@ const _hex = (h) => Buffer.from(h, 'hex');
 const mLeaf = (h) => _shaBuf(Buffer.concat([Buffer.from([0]), _hex(h)]));
 const mNode = (l, r) => _shaBuf(Buffer.concat([Buffer.from([1]), _hex(l), _hex(r)]));
 const fieldLeaf = (k, v, salt) => sha256hex('tsd:field:v1\n' + canon([k, v, salt]));
+// Commits the full sorted key-set as the first leaf, so the set of fields (not just the
+// revealed ones) is signed — a discloser can't later drop a field silently.
+const keysetLeaf = (keys) => sha256hex('tsd:keyset:v1\n' + canon([...keys].sort()));
 function merkleRoot(leafHexes) {
   let level = leafHexes.map(mLeaf);
   while (level.length > 1) {
@@ -66,12 +69,13 @@ function merkleRoot(leafHexes) {
   }
   return level[0];
 }
-// Commit a payload object: fresh per-field salts + the Merkle root to sign as payload_hash.
+// Commit a payload object: fresh per-field salts + the Merkle root (key-set leaf first,
+// then a salted leaf per field) to sign as payload_hash.
 function sdCommit(payload) {
   const keys = Object.keys(payload).sort();
   const salts = {};
   for (const k of keys) salts[k] = randomBytes(16).toString('hex');
-  const root = merkleRoot(keys.map(k => fieldLeaf(k, payload[k], salts[k])));
+  const root = merkleRoot([keysetLeaf(keys), ...keys.map(k => fieldLeaf(k, payload[k], salts[k]))]);
   return { root, salts };
 }
 
